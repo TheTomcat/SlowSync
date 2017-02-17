@@ -2,46 +2,60 @@ import os
 from os.path import dirname, relpath, basename, getsize, join
 import xxhash as xxh
 import argparse
+import pickle
 
-parser = argparse.ArgumentParser(description="")
+parser = argparse.ArgumentParser(description="Small app to sync two remote filesystems with " +
+                                             "shonky bandwidth that I visit frequently",
+                                 prefix_chars="-\\")
+parser.add_argument("-v", "--verbose", action="count", default=0)
+parser.add_argument("-b", "--block-size", type=int, default=4096,
+                    help="Override the default block size, specified in kBs")
 group = parser.add_mutually_exclusive_group()
-group.add_argument("-c","--collision-check")
-group.add_argument("-p","--parse")
-parser.add_argument("-d","--root-directory",action="store")
+group.add_argument("-c", "--collision-check", action="store", metavar="Directory",
+                   help="For debugging purposes. To see if the lazy fast-hash works appropriately")
+group.add_argument("-p", "--parse", nargs=2,
+                   metavar=("Input_Directory", "Output_Database"))
+group.add_argument("-g", "--generate-actions", nargs=4,
+                   metavar=("Database_1", "Database_2", "Transfer_directory", "Output_file"))
 
+args = parser.parse_args()
 
 root_directory_A = "E:\\"
 root_directory_B = "C:\\Users\\vossy\\Desktop\\E\\"
 
 
-def fast_hash(filename):
-    return getsize(filename)
-
-
-def xxhash(filename):
-    chunk_size = 4096*1024
+def xxhash(filename, full_hash=False):
+    chunk_size = args.block_size*1024
     hasher = xxh.xxh64()
     with open(filename, "rb") as file:
-        buf = file.read(chunk_size)
+        if full_hash:
+            buf = file.read()
+        else:
+            buf = file.read(chunk_size)
         hasher.update(buf)
-    # file = open(filename,'rb')
-    # H = xxh.xxh64(file.read())
-    # file.close()
     return hasher.hexdigest()
 
 
 def collision_check(directory):
-    bank = []
+    print("Running on ",directory)
+    bank = {}
     found = False
     for root, dirs, files in os.walk(directory):
         for file in files:
-            H = fast_hash(join(root,file))
-            if H not in bank:
-                bank.append(H)
+            h = xxhash(join(root, file))
+            if h not in bank:
+                bank[h]= join(root, file)
             else:
-                print("Collision with hash ", H)
+                f1 = bank[h]
+                f2 = join(root, file)
+                if xxhash(f1,True) == xxhash(f2,True):
+                    if args.verbose >= 1:
+                        print("Duplicate with hash " + h + " at " + f1 + " and " + f2)
+                else:
+                    if args.verbose >= 1:
+                        print("Collision with hash " + h + " at " + f1 + " and " + f2)
                 found = True
-    return found
+    return not found
 
 
 class File(object):
@@ -68,6 +82,7 @@ class File(object):
     def root_path(self):
         return join(self.root_dir, self.rel_path())
 
+
 def parse(directory):
     path_dict = {}
     hash_dict = {}
@@ -75,22 +90,23 @@ def parse(directory):
 
     for root, dirs, files in os.walk(directory):
         for file_name in files:
-            print(join(root,file_name))
-            if getsize(join(root,file_name)) < 100:
+            if args.verbose:
+                print(join(root, file_name))
+            if getsize(join(root, file_name)) < 1024*4:
                 continue
-            F = File(join(root, file_name), directory)
-            file_list.append(F)
-            path_dict[F.rel_path()] = len(file_list)-1
-            if F.hash in hash_dict:
-                print(F.hash)
-            hash_dict[F.hash] = len(file_list)-1
+            f = File(join(root, file_name), directory)
+            file_list.append(f)
+            path_dict[f.rel_path()] = len(file_list)-1
+            if f.hash in hash_dict:
+                print(f.hash)
+            hash_dict[f.hash] = len(file_list)-1
 
     return file_list, path_dict, hash_dict
 
 
-def compare(A,B):
-    file_list_A, path_dict_A, hash_dict_A = A
-    file_list_B, path_dict_B, hash_dict_B = B
+def compare(a, b):
+    file_list_A, path_dict_A, hash_dict_A = a
+    file_list_B, path_dict_B, hash_dict_B = b
 
     checked = []
     dup = 0
@@ -109,7 +125,7 @@ def compare(A,B):
             file_B = file_list_B[hash_dict_B[hash]]
             path_in_B = file_B.rel_path()
             # Are these files in the same place?
-            if path_in_A==path_in_B:
+            if path_in_A == path_in_B:
                 # Yes! Hooray!
                 union.append((hash, file_A))
             else:
@@ -119,7 +135,7 @@ def compare(A,B):
 
     for hash in hash_dict_B:
         if hash in checked:
-            dup+=1
+            dup += 1
             continue
         checked.append(hash)
         file_B = file_list_B[hash_dict_B[hash]]
@@ -139,28 +155,49 @@ def sizeof(FileList):
 def action_on(U, Ao, Bo, L, root_A, root_B):
     actions = []
     for hash, file in Ao:
-        actions.append(["COPY", join(root_A, file.rel_path()), join(root_B, file.rel_path())])
+        actions.append(["COPY RIGHT", join(root_A, file.rel_path()), join(root_B, file.rel_path())])
     for hash, file in Bo:
-        actions.append(["COPY", join(root_B, file.rel_path()), join(root_A, file.rel_path())])
+        actions.append(["COPY LEFT", join(root_B, file.rel_path()), join(root_A, file.rel_path())])
     for hash, fileA, fileB in L:
         pass
     return actions
 
+if args.collision_check:
+    print("Checking directory ", args.collision_check, " for collisions")
+    c = collision_check(args.collision_check)
+    if c:
+        print("No collisions found")
+    else:
+        print("Collisions found")
 
+if args.parse:
+    input_dir, output_file = args.parse
+    directory_structure = parse(input_dir)
+    with open(output_file, 'w') as f:
+        pickle.dump(directory_structure, open(output_file,"wb"))
 
-#print(collision_check(root_directory_A))
-
-A = parse(root_directory_A)
-B = parse(root_directory_B)
-
-U, Ao, Bo, L = compare(A,B)
-
-print(len(U), len(Ao), len(Bo), len(L))
-print(Ao)
-print(sizeof(Ao))
-print(Bo)
-print(sizeof(Bo))
-print(L)
-print(sizeof(L))
-
-print (action_on(U, Ao, Bo, L, root_directory_A, root_directory_B))
+if args.generate_actions:
+    db1, db2, transfer_dir, output_file = args.generate_actions
+    if not os.path.isdir(transfer_dir):
+        print("Invalid directory ", transfer_dir)
+    directory_structure1 = pickle.load(open(db1, "rb"))
+    directory_structure2 = pickle.load(open(db2, "rb"))
+    U, Ao, Bo, L = compare(directory_structure1, directory_structure2)
+    print(action_on(U, Ao, Bo, L, root_directory_A, root_directory_B))
+#
+# collision_check(root_directory_A)
+#
+# A = parse(root_directory_A)
+# B = parse(root_directory_B)
+#
+# U, Ao, Bo, L = compare(A, B)
+#
+# print(len(U), len(Ao), len(Bo), len(L))
+# print(Ao)
+# print(sizeof(Ao))
+# print(Bo)
+# print(sizeof(Bo))
+# print(L)
+# print(sizeof(L))
+#
+# print(action_on(U, Ao, Bo, L, root_directory_A, root_directory_B))
