@@ -180,7 +180,7 @@ if args.generate_actions:
     directory_structure1 = pickle.load(open(db1, "rb"))
     directory_structure2 = pickle.load(open(db2, "rb"))
     U, Ao, Bo, L = compare(directory_structure1, directory_structure2)
-    print(action_on(U, Ao, Bo, L, root_directory_A, root_directory_B))
+    print(action_on(U, Ao, Bo, L, "", ""))
 #
 # collision_check(root_directory_A)
 #
